@@ -1,0 +1,20 @@
+[tool.poetry]
+name = "karpathy-tutorial"
+version = "0.1.0"
+description = "Following Andrej Karpathy's Neural Networks: Zero Tutorial"
+authors = ["gordonbchen <gordonbchen@gmail.com>"]
+license = "MIT"
+readme = "README.md"
+
+[tool.poetry.dependencies]
+python = "^3.10"
+notebook = "^7.3.2"
+matplotlib = "^3.10.0"
+numpy = "^2.2.1"
+graphviz = "^0.20.3"
+torch = "^2.5.1"
+
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
