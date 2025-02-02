@@ -18,8 +18,6 @@ N_HEADS = 6
 N_LAYERS = 6
 DROPOUT = 0.2
 
-assert EMBED_DIM % N_HEADS == 0
-
 # Download data.
 data_path = Path("data/shakespeare.txt")
 if not data_path.exists():
@@ -62,48 +60,37 @@ def get_batch(data):
 
 
 # Define model.
-class Head(nn.Module):
-    """A single self-attention head."""
-
-    def __init__(self, head_size):
+class MultiHeadAttention(nn.Module):
+    def __init__(self, embed_dim, n_heads):
         super().__init__()
-        self.head_size = head_size
-        self.query = nn.Linear(EMBED_DIM, head_size, bias=False)
-        self.key = nn.Linear(EMBED_DIM, head_size, bias=False)
-        self.value = nn.Linear(EMBED_DIM, head_size, bias=False)
-        self.dropout = nn.Dropout(DROPOUT)
-
+        self.n_heads = n_heads
+        assert embed_dim % n_heads == 0, f"{embed_dim=} must be a multiple of {n_heads=}"
+        self.head_size = embed_dim // n_heads
+        self.qkv_linear = nn.Linear(self.head_size, self.head_size * 3, bias=False)
         self.register_buffer(
             "tril", torch.triu(torch.ones(BLOCK_SIZE, BLOCK_SIZE, dtype=torch.bool), diagonal=1)
         )
 
-    def forward(self, xb):
-        # (B,T,EMBED_DIM) -> (B,T,HEAD_SIZE).
-        q = self.query(xb)
-        k = self.value(xb)
-        v = self.value(xb)
-
-        wei = q @ k.transpose(-1, -2)  # (B,T,HEAD_SIZE) -> (B,T,T)
-        B, T, C = xb.shape
-        wei.masked_fill_(self.tril[:T, :T], float("-inf"))
-        wei = F.softmax(wei / (self.head_size**0.5), dim=-1)
-        wei = self.dropout(wei)
-
-        out = wei @ v  # (B,T,T) @ (B,T,HEAD_SIZE) -> (B,T,HEAD_SIZE)
-        return out
-
-
-class MultiHeadAttention(nn.Module):
-    def __init__(self, n_heads, head_size):
-        super().__init__()
-        self.heads = nn.ModuleList([Head(head_size) for _ in range(n_heads)])
-        self.proj = nn.Linear(EMBED_DIM, EMBED_DIM)
+        self.proj = nn.Linear(embed_dim, embed_dim)
         self.dropout = nn.Dropout(DROPOUT)
 
-    def forward(self, xb):
-        out = torch.cat(
-            [h(xb) for h in self.heads], dim=-1
-        )  # n_heads x (B,T,head_size) -> (B,T,head_size*n_heads)
+    def forward(self, x):
+        B, T, C = x.shape
+        # Batch heads: (B,T,C) -> (B,n_heads,T,head_size).
+        x = x.view(B, T, self.n_heads, self.head_size).transpose(1, 2)
+
+        qkv = self.qkv_linear(x)
+        # Split QKV: (B,nh,T,hs*3) -> 3*(B,nh,T,hs).
+        q, k, v = qkv.tensor_split(3, dim=-1)
+
+        wei = q @ k.transpose(-1, -2)
+        wei.masked_fill_(self.tril[:T, :T], float("-inf"))
+        wei = F.softmax(wei / (self.head_size**0.5), dim=-1)
+
+        out = wei @ v
+        # Unbatch heads: (B,nh,T,hs) -> (B,T,C).
+        out = out.transpose(1, 2).contiguous().view(B, T, C)
+
         out = self.dropout(self.proj(out))
         return out
 
@@ -125,13 +112,13 @@ class FeedFoward(nn.Module):
 class Block(nn.Module):
     def __init__(self, embed_dim, n_heads):
         super().__init__()
-        self.sa_heads = MultiHeadAttention(n_heads, embed_dim // n_heads)
+        self.mha = MultiHeadAttention(embed_dim, n_heads)
         self.ffwd = FeedFoward(embed_dim)
         self.ln1 = nn.LayerNorm(embed_dim)
         self.ln2 = nn.LayerNorm(embed_dim)
 
     def forward(self, x):
-        x = x + self.sa_heads(self.ln1(x))
+        x = x + self.mha(self.ln1(x))
         x = x + self.ffwd(self.ln2(x))
         return x
 
