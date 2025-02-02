@@ -66,7 +66,7 @@ class MultiHeadAttention(nn.Module):
         self.n_heads = n_heads
         assert embed_dim % n_heads == 0, f"{embed_dim=} must be a multiple of {n_heads=}"
         self.head_size = embed_dim // n_heads
-        self.qkv_linear = nn.Linear(self.head_size, self.head_size * 3, bias=False)
+        self.qkv_linear = nn.Linear(embed_dim, embed_dim * 3, bias=False)
         self.register_buffer(
             "tril", torch.triu(torch.ones(BLOCK_SIZE, BLOCK_SIZE, dtype=torch.bool), diagonal=1)
         )
@@ -75,13 +75,15 @@ class MultiHeadAttention(nn.Module):
         self.dropout = nn.Dropout(DROPOUT)
 
     def forward(self, x):
-        B, T, C = x.shape
-        # Batch heads: (B,T,C) -> (B,n_heads,T,head_size).
-        x = x.view(B, T, self.n_heads, self.head_size).transpose(1, 2)
-
         qkv = self.qkv_linear(x)
-        # Split QKV: (B,nh,T,hs*3) -> 3*(B,nh,T,hs).
+        # Split QKV: (B,T,3*C) -> 3*(B,T,C).
         q, k, v = qkv.tensor_split(3, dim=-1)
+
+        # Batch heads: (B,T,C) -> (B,n_heads,T,head_size).
+        B, T, C = x.shape
+        q = q.view(B, T, self.n_heads, self.head_size).transpose(1, 2)
+        k = k.view(B, T, self.n_heads, self.head_size).transpose(1, 2)
+        v = v.view(B, T, self.n_heads, self.head_size).transpose(1, 2)
 
         wei = q @ k.transpose(-1, -2)
         wei.masked_fill_(self.tril[:T, :T], float("-inf"))
