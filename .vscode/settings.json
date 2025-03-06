@@ -5,10 +5,8 @@
         "editor.codeActionsOnSave": {
             "source.fixAll": "explicit",
             "source.organizeImports": "explicit"
-        }
+        },
     },
-
-    "ruff.format.args": ["--line-length=100"],
 
     "files.insertFinalNewline": true
 }
