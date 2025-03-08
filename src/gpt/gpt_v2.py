@@ -1,3 +1,4 @@
+import math
 from pathlib import Path
 
 import requests
@@ -5,16 +6,17 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.optim import AdamW
+from torch.utils.tensorboard import SummaryWriter
 
 # Hyperparams.
 BATCH_SIZE = 64
-BLOCK_SIZE = 256
+BLOCK_SIZE = 128
 TRAIN_STEPS = 5_000
 LR = 3e-4
 EVAL_INTERVAL = 500
 EVAL_ITERS = 128
-EMBED_DIM = 384
-N_HEADS = 6
+EMBED_DIM = 256
+N_HEADS = 8
 N_LAYERS = 6
 DROPOUT = 0.2
 
@@ -88,8 +90,8 @@ class MultiHeadAttention(nn.Module):
         wei = q @ k.transpose(-1, -2)
         wei.masked_fill_(self.tril[:T, :T], float("-inf"))
         wei = F.softmax(wei / (self.head_size**0.5), dim=-1)
-
         out = wei @ v
+
         # Unbatch heads: (B,nh,T,hs) -> (B,T,C).
         out = out.transpose(1, 2).contiguous().view(B, T, C)
 
@@ -136,26 +138,26 @@ class GPT(nn.Module):
 
         self.register_buffer("positions", torch.arange(BLOCK_SIZE))
 
-    def forward(self, xb, yb=None):
+    def forward(self, xb):
         tok_emb = self.tok_embedding(xb)  # (B,T) -> (B,T,EMBED_DIM)
         pos_emb = self.pos_embedding(self.positions[: xb.shape[-1]])  # (T,) -> (T,EMBED_DIM)
         x = tok_emb + pos_emb  # (B,T,EMBED_DIM)
         x = self.blocks(x)
         x = self.ln(x)
         logits = self.lm_head(x)  # (B,T,EMBED_DIM) -> (B,T,VOCAB_SIZE)
+        return logits
 
-        if yb is None:
-            loss = None
-        else:
-            B, T, C = logits.shape
-            loss = F.cross_entropy(logits.view(B * T, C), yb.view(B * T))
-        return logits, loss
+    def calc_loss(self, xb, yb):
+        logits = self(xb)
+        B, T, C = logits.shape
+        loss = F.cross_entropy(logits.view(B * T, C), yb.view(B * T))
+        return loss
 
     @torch.no_grad()
     def generate(self, xb, max_new_tokens):
         for _ in range(max_new_tokens):
             ctx = xb[:, -BLOCK_SIZE:]
-            logits, _ = self(ctx)
+            logits = self(ctx)
             logits = logits[:, -1, :]  # B,T,C -> B, C
             probs = F.softmax(logits, dim=-1)
             new_inds = torch.multinomial(probs, num_samples=1)  # B
@@ -169,8 +171,8 @@ def estimate_loss(model, train_data, val_data, eval_steps):
     model.eval()
     total_train_loss, total_val_loss = 0, 0
     for _ in range(eval_steps):
-        _, train_loss = model(*get_batch(train_data))
-        _, val_loss = model(*get_batch(val_data))
+        train_loss = model.calc_loss(*get_batch(train_data))
+        val_loss = model.calc_loss(*get_batch(val_data))
 
         total_train_loss += train_loss.item()
         total_val_loss += val_loss.item()
@@ -179,22 +181,28 @@ def estimate_loss(model, train_data, val_data, eval_steps):
     return total_train_loss / eval_steps, total_val_loss / eval_steps
 
 
-bigram = GPT().to("cuda").train()
-optim = AdamW(bigram.parameters(), lr=LR)
+gpt = torch.compile(GPT().to("cuda").train())
+optim = AdamW(gpt.parameters(), lr=LR)
 
+print(f"Params: {sum(p.numel() for p in gpt.parameters())}")
+print(f"Expected init loss: {math.log(VOCAB_SIZE)}")
+
+logger = SummaryWriter()
 for i in range(TRAIN_STEPS):
     xb, yb = get_batch(train_data)
-    _, loss = bigram(xb, yb)
+    loss = gpt.calc_loss(xb, yb)
 
     optim.zero_grad()
     loss.backward()
     optim.step()
 
     if (i % EVAL_INTERVAL == 0) or (i == TRAIN_STEPS - 1):
-        train_loss, val_loss = estimate_loss(bigram, train_data, val_data, EVAL_ITERS)
+        train_loss, val_loss = estimate_loss(gpt, train_data, val_data, EVAL_ITERS)
+        logger.add_scalars("loss", {"train": train_loss, "val": val_loss}, i)
         print(f"{i}: {train_loss=} {val_loss=}")
+logger.close()
 
-bigram.eval()
+gpt.eval()
 new_x = torch.zeros((1, 1), dtype=torch.long, device="cuda")
-new_text = decode(bigram.generate(new_x, 1_000)[0].tolist())
+new_text = decode(gpt.generate(new_x, 1_000)[0].tolist())
 print(new_text)

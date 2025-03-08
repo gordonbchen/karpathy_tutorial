@@ -190,22 +190,22 @@ def estimate_loss(model, train_data, val_data, eval_steps):
     return total_train_loss / eval_steps, total_val_loss / eval_steps
 
 
-bigram = GPT().to("cuda").train()
-optim = AdamW(bigram.parameters(), lr=LR)
+gpt = GPT().to("cuda").train()
+optim = AdamW(gpt.parameters(), lr=LR)
 
 for i in range(TRAIN_STEPS):
     xb, yb = get_batch(train_data)
-    _, loss = bigram(xb, yb)
+    _, loss = gpt(xb, yb)
 
     optim.zero_grad()
     loss.backward()
     optim.step()
 
     if (i % EVAL_INTERVAL == 0) or (i == TRAIN_STEPS - 1):
-        train_loss, val_loss = estimate_loss(bigram, train_data, val_data, EVAL_ITERS)
+        train_loss, val_loss = estimate_loss(gpt, train_data, val_data, EVAL_ITERS)
         print(f"{i}: {train_loss=} {val_loss=}")
 
-bigram.eval()
+gpt.eval()
 new_x = torch.zeros((1, 1), dtype=torch.long, device="cuda")
-new_text = decode(bigram.generate(new_x, 1_000)[0].tolist())
+new_text = decode(gpt.generate(new_x, 1_000)[0].tolist())
 print(new_text)
